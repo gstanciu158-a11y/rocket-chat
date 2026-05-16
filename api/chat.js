@@ -17,17 +17,25 @@ export default async function handler(req, res) {
         model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
         system,
-        messages
+        messages,
+        stream: false
       })
     });
 
     const data = await response.json();
 
-    return res.status(200).json({
-      text: data?.content?.[0]?.text || "No response"
-    });
+    console.log(data);
+
+    const text =
+      data?.content?.[0]?.text ||
+      "Nu am primit răspuns.";
+
+    return res.status(200).json({ text });
 
   } catch (err) {
-    return res.status(500).json({ error: "Server error" });
+    console.error(err);
+    return res.status(500).json({
+      error: "Server error"
+    });
   }
 }
