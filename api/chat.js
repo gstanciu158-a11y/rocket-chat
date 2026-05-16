@@ -1,5 +1,4 @@
-export const config = { runtime: 'edge' };
-
+export const runtime = 'edge';
 const ALLOWED_ORIGINS = [
   'https://sites.google.com',
   'https://www.google.com',
