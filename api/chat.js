@@ -1,4 +1,5 @@
 export const runtime = 'edge';
+
 const ALLOWED_ORIGINS = [
   'https://sites.google.com',
   'https://www.google.com',
@@ -19,7 +20,7 @@ function getCorsHeaders(origin) {
 
 export default async function handler(req) {
   const origin = req.headers.get('origin') || '';
-  const cors   = getCorsHeaders(origin);
+  const cors = getCorsHeaders(origin);
 
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: cors });
@@ -34,81 +35,117 @@ export default async function handler(req) {
     body = await req.json();
   } catch {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
-      status: 400, headers: { ...cors, 'Content-Type': 'application/json' },
+      status: 400,
+      headers: { ...cors, 'Content-Type': 'application/json' },
     });
   }
 
   const { messages, system } = body;
 
-  if (!messages || !Array.isArray(messages)) {
+  if (!Array.isArray(messages)) {
     return new Response(JSON.stringify({ error: 'Missing messages' }), {
-      status: 400, headers: { ...cors, 'Content-Type': 'application/json' },
-    });
-  }
-
-  // Convert history to Gemini format
-  const geminiContents = messages.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }]
-  }));
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse&key=${apiKey}`;
-
-  const geminiRes = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: system || '' }] },
-      contents: geminiContents,
-      generationConfig: { maxOutputTokens: 1000, temperature: 0.7 }
-    }),
-  });
-
-  if (!geminiRes.ok) {
-    const err = await geminiRes.text();
-    return new Response(JSON.stringify({ error: err }), {
-      status: geminiRes.status,
+      status: 400,
       headers: { ...cors, 'Content-Type': 'application/json' },
     });
   }
 
-  // Transform Gemini SSE → Anthropic-compatible SSE so chatbot.html works unchanged
+  // Groq format (OpenAI-compatible)
+  const formattedMessages = [
+    {
+      role: 'system',
+      content: system || '',
+    },
+    ...messages.map(m => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: m.content || '',
+    })),
+  ];
+
+  const apiKey = process.env.GROQ_API_KEY;
+
+  if (!apiKey) {
+    return new Response(JSON.stringify({ error: 'Missing GROQ_API_KEY' }), {
+      status: 500,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+    });
+  }
+
+  const groqRes = await fetch(
+    'https://api.groq.com/openai/v1/chat/completions',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'llama-3.1-8b-instant',
+        messages: formattedMessages,
+        temperature: 0.7,
+        stream: true,
+      }),
+    }
+  );
+
+  if (!groqRes.ok || !groqRes.body) {
+    const err = await groqRes.text();
+    return new Response(JSON.stringify({ error: err }), {
+      status: groqRes.status,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+    });
+  }
+
   const encoder = new TextEncoder();
-  const geminiReader = geminiRes.body.getReader();
+  const reader = groqRes.body.getReader();
   const decoder = new TextDecoder();
 
   const stream = new ReadableStream({
     async start(controller) {
-      let buf = '';
+      let buffer = '';
+
       try {
         while (true) {
-          const { done, value } = await geminiReader.read();
+          const { done, value } = await reader.read();
           if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split('\n');
-          buf = lines.pop();
+
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split('\n');
+          buffer = lines.pop();
+
           for (const line of lines) {
             if (!line.startsWith('data: ')) continue;
-            const raw = line.slice(6).trim();
+
+            const raw = line.replace('data: ', '').trim();
             if (!raw || raw === '[DONE]') continue;
+
             try {
-              const parsed = JSON.parse(raw);
-              const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+              const json = JSON.parse(raw);
+
+              const text =
+                json?.choices?.[0]?.delta?.content;
+
               if (text) {
                 const event = JSON.stringify({
                   type: 'content_block_delta',
-                  delta: { text }
+                  delta: { text },
                 });
-                controller.enqueue(encoder.encode(`data: ${event}\n\n`));
+
+                controller.enqueue(
+                  encoder.encode(`data: ${event}\n\n`)
+                );
               }
-            } catch {}
+            } catch {
+              // ignore parse errors
+            }
           }
         }
+      } catch (err) {
+        controller.error(err);
       } finally {
         controller.close();
       }
-    }
+    },
   });
 
   return new Response(stream, {
@@ -117,7 +154,7 @@ export default async function handler(req) {
       ...cors,
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'X-Accel-Buffering': 'no',
+      Connection: 'keep-alive',
     },
   });
 }
