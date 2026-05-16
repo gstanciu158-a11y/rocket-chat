@@ -243,8 +243,7 @@
 
 <script>
 // ── CONFIG — înlocuiește cu URL-ul tău Vercel după deployment ──
-const PROXY_URL = 'https://YOUR-PROJECT.vercel.app/api/chat';
-
+const PROXY_URL = '/api/chat';
 // ── Stars ──
 const starsEl = document.getElementById('stars');
 for (let i = 0; i < 90; i++) {
@@ -392,14 +391,7 @@ async function sendMessage() {
       body: JSON.stringify({
         messages: history,
         system: SYSTEM_PROMPT,
-        const res = await fetch('/api/chat', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    system: SYSTEM_PROMPT,
-    messages: history
- 
-
+        stream: true,
       })
     });
 
